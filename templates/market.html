@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Market — StockSim AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Stock Market</h1>
+  <div class="search-wrap">
+    <input type="text" id="searchInput" placeholder="Search by ticker or name..." class="search-input" />
+  </div>
+</div>
+
+<div class="card">
+  <table class="data-table" id="marketTable">
+    <thead>
+      <tr>
+        <th>Ticker</th>
+        <th>Name</th>
+        <th class="right">Price</th>
+        <th class="right">Day Change</th>
+        <th>AI Explanation</th>
+        <th class="right">Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in stocks %}
+      <tr class="market-row" data-ticker="{{ s.ticker }}" data-name="{{ s.name or s.ticker }}">
+        <td><span class="ticker-badge">{{ s.ticker }}</span></td>
+        <td class="stock-name">{{ s.name or s.ticker }}</td>
+        <td class="right price-cell">
+          {% if s.price %}
+            ${{ '{:,.2f}'.format(s.price) }}
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td class="right">
+          {% if s.change_pct is not none %}
+            <span class="{{ 'positive' if s.change_pct >= 0 else 'negative' }}">
+              {{ '+' if s.change_pct >= 0 else '' }}{{ '{:.2f}'.format(s.change_pct) }}%
+            </span>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td class="ai-table-cell">
+          <strong>{{ s.ai.headline }}</strong>
+          <span>{{ s.ai.student_takeaway }}</span>
+          <a href="{{ url_for('ai_coach', ticker=s.ticker) }}">Ask AI why &rarr;</a>
+        </td>
+        <td class="right">
+          {% if s.price %}
+            <button class="btn-buy"
+              data-ticker="{{ s.ticker }}"
+              data-name="{{ s.name or s.ticker }}"
+              data-price="{{ s.price }}"
+              onclick="openBuyModal(this)">
+              Buy
+            </button>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('searchInput').addEventListener('input', function () {
+  const q = this.value.toLowerCase();
+  document.querySelectorAll('.market-row').forEach(function (row) {
+    const ticker = row.dataset.ticker.toLowerCase();
+    const name = row.dataset.name.toLowerCase();
+    row.style.display = (ticker.includes(q) || name.includes(q)) ? '' : 'none';
+  });
+});
+</script>
+{% endblock %}

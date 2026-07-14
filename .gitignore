@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.db
+.env
+venv/
+.vercel
+node_modules/
+.next/
+dist/
+build/
+out/
+.env.local
+.env*.local
+.venv/

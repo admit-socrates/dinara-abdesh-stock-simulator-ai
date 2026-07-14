@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StockSim AI — Sign In</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body class="auth-body">
+
+<div class="auth-container">
+  <div class="auth-logo">
+    <span class="logo-icon">&#9650;</span>
+    <h1>StockSim AI</h1>
+    <p>Learn why the market moves before risking real money.</p>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="flash flash-{{ cat }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="auth-tabs">
+    <button class="auth-tab active" id="tabLogin" onclick="switchTab('login')">Sign In</button>
+    <button class="auth-tab" id="tabReg" onclick="switchTab('register')">Register</button>
+  </div>
+
+  <!-- Login form -->
+  <form method="POST" id="formLogin" class="auth-form">
+    <input type="hidden" name="action" value="login" />
+    <div class="form-group">
+      <label>Username</label>
+      <input type="text" name="username" required autocomplete="username" placeholder="username" />
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input type="password" name="password" required autocomplete="current-password" placeholder="••••••" />
+    </div>
+    <button type="submit" class="btn-primary btn-full">Sign In</button>
+  </form>
+
+  <!-- Register form -->
+  <form method="POST" id="formRegister" class="auth-form hidden">
+    <input type="hidden" name="action" value="register" />
+    <div class="form-group">
+      <label>Username</label>
+      <input type="text" name="username" required autocomplete="username" placeholder="username" />
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input type="password" name="password" required autocomplete="new-password" placeholder="••••••" />
+    </div>
+    <p class="auth-note">You will receive <strong>${{ '{:,.0f}'.format(starting_cash) }}</strong> in virtual funds plus an AI coach that explains market moves.</p>
+    <button type="submit" class="btn-primary btn-full">Create Account</button>
+  </form>
+</div>
+
+<script>
+  function switchTab(tab) {
+    document.getElementById('formLogin').classList.toggle('hidden', tab !== 'login');
+    document.getElementById('formRegister').classList.toggle('hidden', tab !== 'register');
+    document.getElementById('tabLogin').classList.toggle('active', tab === 'login');
+    document.getElementById('tabReg').classList.toggle('active', tab === 'register');
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Leaderboard — StockSim{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Leaderboard</h1>
+</div>
+
+<div class="card">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th class="center">#</th>
+        <th>Player</th>
+        <th class="right">Starting Balance</th>
+        <th class="right">Current Value</th>
+        <th class="right">Profit $</th>
+        <th class="right">Return</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in board %}
+      <tr class="{{ 'row-me' if u.is_me else '' }}">
+        <td class="center rank">
+          {% if loop.index == 1 %}
+            <span class="medal">&#129351;</span>
+          {% elif loop.index == 2 %}
+            <span class="medal">&#129352;</span>
+          {% elif loop.index == 3 %}
+            <span class="medal">&#129353;</span>
+          {% else %}
+            {{ loop.index }}
+          {% endif %}
+        </td>
+        <td>
+          <span class="username">{{ u.username }}</span>
+          {% if u.is_me %}<span class="badge-me">You</span>{% endif %}
+        </td>
+        <td class="right muted">${{ '{:,.2f}'.format(starting_cash) }}</td>
+        <td class="right">${{ '{:,.2f}'.format(u.total) }}</td>
+        <td class="right {{ 'positive' if u.pnl >= 0 else 'negative' }}">
+          {{ '+' if u.pnl >= 0 else '' }}${{ '{:,.2f}'.format(u.pnl) }}
+        </td>
+        <td class="right">
+          <span class="pct-badge {{ 'positive' if u.pnl_pct >= 0 else 'negative' }}">
+            {{ '+' if u.pnl_pct >= 0 else '' }}{{ '{:.2f}'.format(u.pnl_pct) }}%
+          </span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

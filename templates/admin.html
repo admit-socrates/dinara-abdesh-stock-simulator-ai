@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin — StockSim</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+
+{% if not authenticated %}
+<!-- ── Login ─────────────────────────────────────────────── -->
+<div class="admin-login">
+  <div class="login-box">
+    <span class="lock">&#128274;</span>
+    <h2>Admin Access</h2>
+    {% if error %}
+      <div class="error-msg">{{ error }}</div>
+    {% endif %}
+    <form method="POST">
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" name="password" autofocus placeholder="••••••••" />
+      </div>
+      <button type="submit" class="btn-primary btn-full">Enter</button>
+    </form>
+  </div>
+</div>
+
+{% else %}
+<!-- ── Dashboard ─────────────────────────────────────────── -->
+<div class="admin-header">
+  <h1>&#9878; StockSim Admin</h1>
+  <span>
+    <a href="{{ url_for('index') }}" class="admin-back-link">&larr; Back to app</a>
+    <a href="{{ url_for('admin') }}?logout=1" class="btn-logout">Logout</a>
+  </span>
+</div>
+
+<div class="admin-body">
+
+  <!-- Stats row 1: users -->
+  <h2 class="admin-section-title">Users</h2>
+  <div class="admin-stats" style="margin-bottom:1.5rem;">
+    <div class="admin-card">
+      <div class="label">Total users</div>
+      <div class="value">{{ total_users }}</div>
+    </div>
+    <div class="admin-card">
+      <div class="label">New today</div>
+      <div class="value" style="color:var(--green)">{{ new_today }}</div>
+    </div>
+    <div class="admin-card">
+      <div class="label">New this week</div>
+      <div class="value">{{ new_week }}</div>
+    </div>
+    <div class="admin-card">
+      <div class="label">Virtual money in circulation</div>
+      <div class="value" style="font-size:1.25rem;">${{ '{:,.0f}'.format(total_in_circulation) }}</div>
+      <div class="sub">cash + stock holdings</div>
+    </div>
+  </div>
+
+  <!-- Stats row 2: transactions -->
+  <h2 class="admin-section-title">Transactions</h2>
+  <div class="admin-stats" style="margin-bottom:1.5rem;">
+    <div class="admin-card">
+      <div class="label">Total buys</div>
+      <div class="value" style="color:var(--green)">{{ buys }}</div>
+    </div>
+    <div class="admin-card">
+      <div class="label">Total sells</div>
+      <div class="value" style="color:var(--red)">{{ sells }}</div>
+    </div>
+    <div class="admin-card">
+      <div class="label">All transactions</div>
+      <div class="value">{{ buys + sells }}</div>
+    </div>
+    <div class="admin-card">
+      <div class="label">Buy / Sell ratio</div>
+      <div class="value" style="font-size:1.25rem;">
+        {% if sells > 0 %}{{ '{:.1f}'.format(buys / sells) }}x{% else %}—{% endif %}
+      </div>
+      <div class="sub">buys per sell</div>
+    </div>
+  </div>
+
+  <!-- Top users + Top stocks -->
+  <div class="admin-grid">
+
+    <div class="card">
+      <div class="card-header"><h2>Most Active Users</h2><span class="muted">by transactions</span></div>
+      <div style="padding:.5rem 1.2rem 1rem;">
+        {% if top_users %}
+          {% set max_cnt = top_users[0].cnt %}
+          {% for u in top_users %}
+          <div class="rank-row">
+            <span class="rank-num">{{ loop.index }}</span>
+            <span style="flex:0 0 auto;min-width:8rem;">{{ u.username }}</span>
+            <div class="rank-bar-wrap">
+              <div class="rank-bar" style="width:{{ (u.cnt / max_cnt * 100)|int }}%"></div>
+            </div>
+            <span class="rank-count">{{ u.cnt }} tx</span>
+          </div>
+          {% endfor %}
+        {% else %}
+          <p class="muted" style="padding:.75rem 0;">No transactions yet.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><h2>Most Popular Stocks</h2><span class="muted">by purchases</span></div>
+      <div style="padding:.5rem 1.2rem 1rem;">
+        {% if top_stocks %}
+          {% set max_cnt = top_stocks[0].cnt %}
+          {% for s in top_stocks %}
+          <div class="rank-row">
+            <span class="rank-num">{{ loop.index }}</span>
+            <span class="ticker-badge">{{ s.ticker }}</span>
+            <div class="rank-bar-wrap">
+              <div class="rank-bar" style="width:{{ (s.cnt / max_cnt * 100)|int }}%;background:var(--green)"></div>
+            </div>
+            <span class="rank-count">{{ s.cnt }} buys</span>
+          </div>
+          {% endfor %}
+        {% else %}
+          <p class="muted" style="padding:.75rem 0;">No purchases yet.</p>
+        {% endif %}
+      </div>
+    </div>
+
+  </div>
+
+  <!-- All users table -->
+  <div class="card">
+    <div class="card-header">
+      <h2>All Users</h2>
+      <span class="muted">{{ total_users }} total</span>
+    </div>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Registered</th>
+          <th class="right">Cash</th>
+          <th class="right">Portfolio value</th>
+          <th class="right">P/L %</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users_list %}
+        <tr>
+          <td><span class="username">{{ u.username }}</span></td>
+          <td class="muted">{{ u.registered }}</td>
+          <td class="right">${{ '{:,.2f}'.format(u.cash) }}</td>
+          <td class="right">${{ '{:,.2f}'.format(u.total) }}</td>
+          <td class="right {{ 'positive' if u.pnl_pct >= 0 else 'negative' }}">
+            {{ '+' if u.pnl_pct >= 0 else '' }}{{ '{:.2f}'.format(u.pnl_pct) }}%
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="muted" style="text-align:center;padding:2rem;">No users yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+</div>
+{% endif %}
+
+</body>
+</html>

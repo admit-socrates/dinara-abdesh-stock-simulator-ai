@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}AI Coach — StockSim AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="eyebrow">AI explanation layer</div>
+    <h1>AI Coach</h1>
+  </div>
+  <form class="coach-picker" method="GET" action="{{ url_for('ai_coach') }}">
+    <label for="ticker">Choose stock</label>
+    <select name="ticker" id="ticker" onchange="this.form.submit()">
+      {% for s in stocks %}
+      <option value="{{ s.ticker }}" {% if s.ticker == selected %}selected{% endif %}>
+        {{ s.ticker }} — {{ s.name or s.ticker }}
+      </option>
+      {% endfor %}
+    </select>
+  </form>
+</div>
+
+<div class="ai-hero card coach-hero">
+  <div class="ai-avatar ai-avatar-large" aria-hidden="true"></div>
+  <div>
+    <div class="eyebrow">StockSim AI avatar</div>
+    <h2>It explains the market, not just the chart.</h2>
+    <p>
+      This prototype connects price movement with likely news categories, sector trends, and risk.
+      The final version can connect the same reasoning layer to real-time news APIs.
+    </p>
+  </div>
+</div>
+
+{% if explanation %}
+<div class="coach-layout">
+  <section class="card coach-main">
+    <div class="card-header">
+      <h2>{{ explanation.ticker }} — {{ explanation.name }}</h2>
+      <span class="pct-badge {{ explanation.tone }}">
+        {% if explanation.change_pct is not none %}
+          {{ '+' if explanation.change_pct >= 0 else '' }}{{ '{:.2f}'.format(explanation.change_pct) }}%
+        {% else %}
+          No fresh signal
+        {% endif %}
+      </span>
+    </div>
+    <div class="coach-answer">
+      <p class="coach-headline">{{ explanation.headline }}</p>
+      <div class="reason-card">
+        <span>Why it may be happening</span>
+        <p>{{ explanation.why }}</p>
+      </div>
+      <div class="reason-grid">
+        <div class="reason-card">
+          <span>News to connect</span>
+          <p>{{ explanation.news_signal }}</p>
+        </div>
+        <div class="reason-card">
+          <span>Risk to understand</span>
+          <p>{{ explanation.risk_signal }}</p>
+        </div>
+        <div class="reason-card">
+          <span>Student takeaway</span>
+          <p>{{ explanation.student_takeaway }}</p>
+        </div>
+      </div>
+      {% if explanation.owned_note %}
+      <div class="owned-note">{{ explanation.owned_note }}</div>
+      {% endif %}
+    </div>
+  </section>
+
+  <aside class="card coach-side">
+    <div class="card-header">
+      <h2>Portfolio Snapshot</h2>
+    </div>
+    <div class="mini-stat">
+      <span>Total value</span>
+      <strong>${{ '{:,.2f}'.format(total) }}</strong>
+    </div>
+    <div class="mini-stat">
+      <span>Cash</span>
+      <strong>${{ '{:,.2f}'.format(cash) }}</strong>
+    </div>
+    <div class="mini-stat">
+      <span>Profit / loss</span>
+      <strong class="{{ 'positive' if pnl >= 0 else 'negative' }}">
+        {{ '+' if pnl >= 0 else '' }}${{ '{:,.2f}'.format(pnl) }}
+      </strong>
+    </div>
+  </aside>
+</div>
+{% endif %}
+
+{% if watch %}
+<div class="card">
+  <div class="card-header">
+    <h2>What AI Is Watching Today</h2>
+  </div>
+  <div class="ai-grid">
+    {% for item in watch %}
+    <a class="ai-signal-card" href="{{ url_for('ai_coach', ticker=item.ticker) }}">
+      <div class="ai-signal-top">
+        <span class="ticker-badge">{{ item.ticker }}</span>
+        <span class="{{ item.tone }}">{{ item.change_pct|round(2) }}%</span>
+      </div>
+      <h3>{{ item.headline }}</h3>
+      <p>{{ item.why }}</p>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

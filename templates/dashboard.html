@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — StockSim AI{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>My Dashboard</h1>
+</div>
+
+<div class="ai-hero card">
+  <div class="ai-avatar" aria-hidden="true"></div>
+  <div>
+    <div class="eyebrow">AI Coach</div>
+    <h2>Your portfolio is a learning lab.</h2>
+    <p>
+      StockSim AI uses live price movement to explain what may be pushing stocks up or down:
+      news signals, market trends, and risk. It teaches reasoning instead of giving blind buy/sell calls.
+    </p>
+  </div>
+  <a href="{{ url_for('ai_coach') }}" class="btn-primary">Ask AI Coach</a>
+</div>
+
+<!-- Stats grid -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-label">Cash</div>
+    <div class="stat-value">${{ '{:,.2f}'.format(cash) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Stock Value</div>
+    <div class="stat-value">${{ '{:,.2f}'.format(stocks_value) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Total Value</div>
+    <div class="stat-value">${{ '{:,.2f}'.format(total) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Profit / Loss</div>
+    <div class="stat-value {{ 'positive' if pnl >= 0 else 'negative' }}">
+      {{ '+' if pnl >= 0 else '' }}${{ '{:,.2f}'.format(pnl) }}
+      <span class="stat-pct">({{ '+' if pnl_pct >= 0 else '' }}{{ '{:.2f}'.format(pnl_pct) }}%)</span>
+    </div>
+  </div>
+</div>
+
+{% if ai_watch %}
+<div class="card">
+  <div class="card-header">
+    <h2>AI Market Signals</h2>
+    <a href="{{ url_for('ai_coach') }}" class="card-link">Open AI Coach &rarr;</a>
+  </div>
+  <div class="ai-grid">
+    {% for item in ai_watch %}
+    <a class="ai-signal-card" href="{{ url_for('ai_coach', ticker=item.ticker) }}">
+      <div class="ai-signal-top">
+        <span class="ticker-badge">{{ item.ticker }}</span>
+        <span class="{{ item.tone }}">{{ item.change_pct|default(0)|round(2) }}%</span>
+      </div>
+      <h3>{{ item.headline }}</h3>
+      <p>{{ item.why }}</p>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- Chart -->
+<div class="card">
+  <div class="card-header">
+    <h2>Portfolio Value History</h2>
+  </div>
+  <div class="chart-wrap">
+    <canvas id="portfolioChart"></canvas>
+  </div>
+</div>
+
+<!-- Top holdings -->
+{% if top_holdings %}
+<div class="card">
+  <div class="card-header">
+    <h2>Top Holdings</h2>
+    <a href="{{ url_for('portfolio') }}" class="card-link">All positions &rarr;</a>
+  </div>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Stock</th>
+        <th class="right">Shares</th>
+        <th class="right">Price</th>
+        <th class="right">Value</th>
+        <th class="right">P/L</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for h in top_holdings %}
+      <tr>
+        <td>
+          <span class="ticker-badge">{{ h.ticker }}</span>
+          <span class="stock-name">{{ h.name }}</span>
+        </td>
+        <td class="right">{{ '{:g}'.format(h.shares) }}</td>
+        <td class="right">${{ '{:,.2f}'.format(h.current_price) }}</td>
+        <td class="right">${{ '{:,.2f}'.format(h.value) }}</td>
+        <td class="right {{ 'positive' if h.gain >= 0 else 'negative' }}">
+          {{ '+' if h.gain >= 0 else '' }}{{ '{:.2f}'.format(h.gain_pct) }}%
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon">&#128200;</div>
+  <p>You don't own any stocks yet.</p>
+  <a href="{{ url_for('market') }}" class="btn-primary">Go to Market</a>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const labels = {{ chart_labels | safe }};
+  const values = {{ chart_data | safe }};
+
+  const ctx = document.getElementById('portfolioChart').getContext('2d');
+  const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+  gradient.addColorStop(0, 'rgba(56, 139, 253, 0.35)');
+  gradient.addColorStop(1, 'rgba(56, 139, 253, 0.0)');
+
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Portfolio Value ($)',
+        data: values,
+        borderColor: '#388bfd',
+        backgroundColor: gradient,
+        borderWidth: 2,
+        pointRadius: values.length < 10 ? 4 : 2,
+        pointBackgroundColor: '#388bfd',
+        fill: true,
+        tension: 0.3,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => '$' + ctx.parsed.y.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}),
+          },
+        },
+      },
+      scales: {
+        x: {
+          ticks: { color: '#8b949e', maxTicksLimit: 8 },
+          grid: { color: '#21262d' },
+        },
+        y: {
+          ticks: {
+            color: '#8b949e',
+            callback: v => '$' + v.toLocaleString(),
+          },
+          grid: { color: '#21262d' },
+        },
+      },
+    },
+  });
+})();
+</script>
+{% endblock %}
