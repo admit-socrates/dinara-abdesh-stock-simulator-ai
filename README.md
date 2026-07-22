@@ -1,104 +1,81 @@
 <!-- ADMIT case: cases/dinara-abdesh -->
-# StockSim AI — Симулятор фондового рынка с AI Coach
+# StockSim AI
 
-This is a separate AI prototype copy of the original StockSim app. It adds an AI Coach layer that explains why stocks may move by connecting live price changes to market signals, news categories, sector trends, and risk.
+A stock-market learning simulator for students. Trade 50 real tickers with $10,000 of virtual money,
+then read an explanation of *why* the market moved and what question to ask about it.
 
-The original `/Users/yerassyl/stock-simulator` project is not edited by this copy.
+Built by Dinara Abdesh. Live at https://stock-simulator-ai.vercel.app
 
-Учебный симулятор для школьников и студентов. Торгуй 50 реальными акциями с виртуальными $10,000.
+## What makes it different
 
-## Быстрый старт
+Most trading simulators teach you the mechanics of buying and selling. This one adds an **explanation
+layer**: on every stock, in the dashboard, the market list, the portfolio, and a dedicated coach page,
+it produces a headline, a plausible reason for the day's move, the matching risk signal, and a takeaway
+question for the student.
 
-### 1. Установить зависимости
+The idea is that a beginner who buys a falling stock should be asked "is this a real business problem
+or short-term market fear?" rather than just watching a red number.
+
+**How the explanations are generated.** They are produced by a deterministic rule engine
+(`build_ai_explanation`, `app.py:286`), not by a language model. It buckets the day's percentage change
+into up, down, or flat, looks up the ticker's sector, and fills a matching template. There is no model
+API involved and no external AI dependency. Calling it an explanation engine is accurate; calling it a
+language model would not be.
+
+## Pages
+
+`/login` · `/dashboard` · `/market` · `/portfolio` · `/leaderboard` · `/ai-coach` · `/admin`
+
+## Stack
+
+Python 3.11, Flask, Flask-Login, SQLite locally and Supabase Postgres in production, yfinance for
+quotes, Chart.js for charts. Server-rendered Jinja templates, one stylesheet, no build step.
+
+## Running it locally
 
 ```bash
 pip install -r requirements.txt
-```
-
-### 2. Настроить базу данных
-
-По умолчанию приложение использует локальный SQLite-файл `stock_simulator.db`.
-Для Supabase/Postgres создай `.env` на основе `.env.example` и укажи:
-
-```bash
-DATABASE_URL=postgresql://postgres:YOUR-PASSWORD@db.gmqomudxrooioipkuzlj.supabase.co:5432/postgres?sslmode=require
-SECRET_KEY=replace-with-a-long-random-secret
-ADMIN_PASSWORDS=replace-with-admin-password
-```
-
-Для Vercel/serverless лучше использовать Supabase pooler connection string, если он доступен.
-Пароль базы данных не коммить в репозиторий.
-На Vercel `/admin` не принимает локальные demo-пароли; нужно задать `ADMIN_PASSWORDS`.
-
-### 3. Запустить приложение
-
-```bash
 python app.py
 ```
 
-При первом запуске:
-- автоматически создаются таблицы в SQLite или Postgres/Supabase
-- загружаются актуальные котировки через yfinance (занимает ~20-30 секунд)
+It defaults to a local SQLite file (`stock_simulator.db`). Nothing else is needed to try it.
 
-### 4. Открыть в браузере
+## Running it in production (Vercel)
 
-```
-http://localhost:5000
-```
-
----
-
-## Что умеет приложение
-
-| Страница | Описание |
-|----------|----------|
-| `/login` | Регистрация и вход. При регистрации выдаётся **$10,000** |
-| `/dashboard` | Баланс, стоимость портфеля, график, топ-5 позиций |
-| `/market` | Список 50 акций с ценами. Поиск, кнопка «Купить» |
-| `/portfolio` | Все открытые позиции с прибылью/убытком |
-| `/leaderboard` | Рейтинг всех участников по доходности |
-| `/admin` | Админ-страница со статистикой пользователей и транзакций |
-
-## Доступные акции (50 штук)
-
-`AAPL` `MSFT` `GOOGL` `AMZN` `TSLA` `META` `NVDA` `NFLX`
-`JPM` `V` `WMT` `DIS` `PYPL` `INTC` `AMD` `BABA` `UBER`
-`LYFT` `SNAP` `ABNB` `SPOT` `SHOP` `SQ` `COIN` `HOOD`
-`NKE` `MCD` `SBUX` `KO` `PEP` `JNJ` `PFE` `MRNA` `ABBV`
-`XOM` `CVX` `BA` `GE` `F` `GM` `RIVN` `LCID` `PLTR` `RBLX`
-`U` `DKNG` `PENN` `MGM` `WYNN` `LVS`
-
-## Требования
-
-- Python 3.9+
-- Интернет-соединение (для загрузки котировок)
-
-## Структура проекта
+Set these as environment variables in the Vercel project, never in the repo:
 
 ```
-stock-simulator/
-├── app.py           # Flask-приложение, все маршруты
-├── database.py      # Инициализация SQLite
-├── stocks.py        # Работа с yfinance, список тикеров
-├── scheduler.py     # Обновление цен каждый день в 09:00
-├── templates/
-│   ├── base.html
-│   ├── login.html
-│   ├── dashboard.html
-│   ├── market.html
-│   ├── portfolio.html
-│   └── leaderboard.html
-├── static/
-│   ├── style.css
-│   └── script.js
-├── requirements.txt
-└── README.md
+DATABASE_URL=<Supabase TRANSACTION POOLER connection string>
+SECRET_KEY=<a long random secret>
+ADMIN_PASSWORDS=<comma-separated admin passwords>
 ```
 
-## Технологии
+### Use the pooler URL, not the direct one
 
-- **Backend**: Python + Flask + Flask-Login
-- **База данных**: SQLite locally, Postgres/Supabase when `DATABASE_URL` is set
-- **Котировки**: yfinance (обновляются ежедневно в 09:00)
-- **Frontend**: HTML + CSS + JavaScript (без фреймворков)
-- **Графики**: Chart.js
+Supabase gives you two connection strings. Use the **Transaction Pooler** one.
+
+- Pooler (correct): `postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:6543/postgres`
+- Direct (breaks): `postgresql://postgres:<pw>@db.<ref>.supabase.co:5432/postgres`
+
+Vercel's serverless functions cannot reach Supabase's direct IPv6 endpoint. The app knows this and
+deliberately refuses the direct form (`database.py:43-46`), blanking it rather than hanging.
+
+**What happens if you get this wrong:** `IS_POSTGRES` becomes false, `SESSION_DEMO_MODE` turns on
+(`app.py:39`), and the app silently degrades to a demo where any username and any 4-character password
+starts a throwaway funded session. Nothing is saved, and the leaderboard is always empty. It looks like
+a broken login. It is actually a missing database.
+
+**How to check which mode you're in:** register a user, log out, then log in again with the *wrong*
+password. If it lets you in, you are in demo mode. If it rejects you, the database is connected.
+
+## Data and privacy
+
+No real money, no real brokerage, no payment details. Prices come from a public quotes API and refresh
+once a day via a scheduled job (`/api/cron/refresh-prices`). Accounts store a username and a password
+hash (pbkdf2:sha256) and nothing else.
+
+## Known limitations
+
+- Prices refresh daily, not live, so intraday moves are not reflected.
+- The explanation engine is rule-based, so it describes patterns rather than analysing a company.
+- Nothing here is financial advice, and no security is recommended.
