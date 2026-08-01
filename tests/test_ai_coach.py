@@ -30,7 +30,7 @@ def test_chat_answers_when_live(client, monkeypatch):
     monkeypatch.setattr(ai, "model_name", lambda: "claude-test")
     captured = {}
 
-    def fake_answer(question, portfolio, holdings, movers):
+    def fake_answer(question, portfolio, holdings, movers, history=None):
         captured["question"] = question
         captured["portfolio"] = portfolio
         return "Here is a grounded, student-friendly answer.", None

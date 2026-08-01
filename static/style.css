@@ -1354,3 +1354,7 @@ button, input {
   font-size: 12px;
   color: var(--text-muted);
 }
+
+/* Trade history table helpers */
+.table-wrap { overflow-x: auto; }
+.data-table th.num, .data-table td.num { text-align: right; white-space: nowrap; }

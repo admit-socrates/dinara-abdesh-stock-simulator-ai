@@ -75,20 +75,36 @@ def _client():
     return anthropic.Anthropic(api_key=_api_key(), timeout=20.0)
 
 
-def _call(prompt, max_tokens=320):
-    """Single-turn call. Returns the text, or raises on failure."""
+def _call_messages(messages, max_tokens=320):
+    """Multi-turn call. `messages` is a list of {role, content}. Raises on failure."""
     client = _client()
     msg = client.messages.create(
         model=model_name(),
         max_tokens=max_tokens,
         system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
     )
     parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
     text = "".join(parts).strip()
     if not text:
         raise ValueError("Empty response from model")
     return text
+
+
+def _call(prompt, max_tokens=320):
+    """Single-turn convenience wrapper."""
+    return _call_messages([{"role": "user", "content": prompt}], max_tokens)
+
+
+def _sanitize_history(history):
+    """Keep only well-formed user/assistant text turns from prior exchanges."""
+    clean = []
+    for turn in history or []:
+        role = turn.get("role")
+        content = turn.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            clean.append({"role": role, "content": content.strip()[:1500]})
+    return clean[-8:]
 
 
 # ---------------------------------------------------------------------------
@@ -174,13 +190,14 @@ def _split_why_takeaway(text):
 # 2. Free-text coach chat (grounded in the student's real portfolio)
 # ---------------------------------------------------------------------------
 
-def coach_answer(question, portfolio, holdings, movers):
+def coach_answer(question, portfolio, holdings, movers, history=None):
     """
     Answer a student's question, grounded in their real portfolio + live prices.
 
     portfolio: dict with cash, total, pnl, pnl_pct
     holdings:  list of dicts (ticker, shares, gain_pct, current_price)
     movers:    list of dicts (ticker, change_pct) — a few notable movers today
+    history:   optional list of prior {role, content} turns for follow-ups
 
     Returns (answer_text, error_or_None). On any failure returns
     (None, short_message) so the caller can show a friendly note.
@@ -220,8 +237,9 @@ def coach_answer(question, portfolio, holdings, movers):
         f"Do not invent prices or news."
     )
 
+    messages = _sanitize_history(history) + [{"role": "user", "content": context}]
     try:
-        text = _call(context, max_tokens=380)
+        text = _call_messages(messages, max_tokens=380)
     except Exception:
         return None, "The AI coach is busy right now. Please try again in a moment."
     return text, None
