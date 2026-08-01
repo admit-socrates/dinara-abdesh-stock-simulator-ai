@@ -22,14 +22,46 @@
 <div class="ai-hero card coach-hero">
   <div class="ai-avatar ai-avatar-large" aria-hidden="true"></div>
   <div>
-    <div class="eyebrow">StockSim AI avatar</div>
+    <div class="eyebrow">
+      StockSim AI avatar
+      {% if ai_live %}
+        <span class="ai-badge live" title="Model: {{ ai_model }}">AI live</span>
+      {% else %}
+        <span class="ai-badge proto">rule-based</span>
+      {% endif %}
+    </div>
     <h2>It explains the market, not just the chart.</h2>
     <p>
-      This prototype connects price movement with likely news categories, sector trends, and risk.
-      The final version can connect the same reasoning layer to real-time news APIs.
+      {% if ai_live %}
+      Ask the coach anything about your portfolio or a stock. It reads your real
+      holdings, cash, and profit/loss, and answers in plain language you can learn from.
+      {% else %}
+      Right now the coach connects price movement with sector trends and risk using
+      built-in rules. Switch on the AI key to get live, portfolio-aware answers from a real model.
+      {% endif %}
     </p>
   </div>
 </div>
+
+{% if ai_live %}
+<section class="card coach-chat">
+  <div class="card-header">
+    <h2>Ask the AI Coach</h2>
+  </div>
+  <div id="chatLog" class="chat-log" aria-live="polite"></div>
+  <div class="chat-suggestions">
+    <button type="button" class="chip" data-q="How is my portfolio doing so far?">How is my portfolio doing?</button>
+    <button type="button" class="chip" data-q="What does diversification mean and am I diversified?">Am I diversified?</button>
+    <button type="button" class="chip" data-q="Explain what makes {{ selected }} risky in simple terms.">Why is {{ selected }} risky?</button>
+  </div>
+  <form id="chatForm" class="chat-form" autocomplete="off">
+    <input id="chatInput" type="text" maxlength="500"
+           placeholder="Ask about your portfolio or a stock..." />
+    <button type="submit" class="btn-primary" id="chatSend">Ask</button>
+  </form>
+  <p class="chat-note">Educational only. Virtual money. The coach uses your real simulator data and won't give financial advice.</p>
+</section>
+{% endif %}
 
 {% if explanation %}
 <div class="coach-layout">
@@ -110,5 +142,70 @@
     {% endfor %}
   </div>
 </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if ai_live %}
+<script>
+(function () {
+  var form = document.getElementById('chatForm');
+  var input = document.getElementById('chatInput');
+  var log = document.getElementById('chatLog');
+  var sendBtn = document.getElementById('chatSend');
+  if (!form) return;
+
+  function addMsg(text, who) {
+    var el = document.createElement('div');
+    el.className = 'chat-msg ' + who;
+    el.textContent = text;
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    return el;
+  }
+
+  function ask(question) {
+    if (!question) return;
+    addMsg(question, 'me');
+    input.value = '';
+    input.disabled = true;
+    sendBtn.disabled = true;
+    var thinking = addMsg('Thinking…', 'ai pending');
+
+    fetch('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: question }),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        thinking.remove();
+        if (res.ok && res.d.answer) {
+          addMsg(res.d.answer, 'ai');
+        } else {
+          addMsg(res.d.error || 'Something went wrong. Please try again.', 'ai error');
+        }
+      })
+      .catch(function () {
+        thinking.remove();
+        addMsg('Network error. Please try again.', 'ai error');
+      })
+      .finally(function () {
+        input.disabled = false;
+        sendBtn.disabled = false;
+        input.focus();
+      });
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    ask(input.value.trim());
+  });
+
+  document.querySelectorAll('.chat-suggestions .chip').forEach(function (btn) {
+    btn.addEventListener('click', function () { ask(btn.dataset.q); });
+  });
+})();
+</script>
 {% endif %}
 {% endblock %}

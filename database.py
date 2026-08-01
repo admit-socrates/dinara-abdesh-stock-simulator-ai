@@ -171,6 +171,12 @@ _SQLITE_SCHEMA = f'''
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id)
     );
+    CREATE TABLE IF NOT EXISTS ai_usage (
+        user_id INTEGER NOT NULL,
+        day     TEXT NOT NULL,
+        count   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id, day)
+    );
 '''
 
 # Each string is one statement (psycopg2 doesn't support multi-statement scripts)
@@ -213,6 +219,12 @@ _POSTGRES_STATEMENTS = [
         total_value DOUBLE PRECISION NOT NULL,
         cash        DOUBLE PRECISION NOT NULL,
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''',
+    '''CREATE TABLE IF NOT EXISTS ai_usage (
+        user_id INTEGER NOT NULL,
+        day     TEXT NOT NULL,
+        count   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id, day)
     )''',
 ]
 

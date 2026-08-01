@@ -33,10 +33,57 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 from database import STARTING_CASH, init_db, get_db, close_db, IS_POSTGRES
 from stocks import TICKERS, TICKER_NAMES, ensure_prices_loaded
+import ai
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'stock-sim-dev-secret')
 SESSION_DEMO_MODE = bool(os.environ.get('VERCEL')) and not IS_POSTGRES
+
+# Max AI-coach calls per user per day. Protects the paid API from abuse/cost.
+try:
+    AI_DAILY_LIMIT = int(os.environ.get('AI_DAILY_LIMIT', '40'))
+except ValueError:
+    AI_DAILY_LIMIT = 40
+
+
+def ai_quota_check_and_increment(db, user_id):
+    """
+    Atomically consume one unit of the user's daily AI quota.
+    Returns (allowed: bool, remaining_after: int). In demo mode (no DB) the
+    count lives in the session instead.
+    """
+    today = date.today().isoformat()
+
+    if SESSION_DEMO_MODE:
+        used = session.get('ai_used', {})
+        n = int(used.get(today, 0))
+        if n >= AI_DAILY_LIMIT:
+            return False, 0
+        used = {today: n + 1}  # keep only today
+        session['ai_used'] = used
+        session.modified = True
+        return True, AI_DAILY_LIMIT - (n + 1)
+
+    row = db.execute(
+        'SELECT count FROM ai_usage WHERE user_id = ? AND day = ?',
+        (user_id, today),
+    ).fetchone()
+    used = row['count'] if row else 0
+    if used >= AI_DAILY_LIMIT:
+        return False, 0
+
+    if row:
+        db.execute(
+            'UPDATE ai_usage SET count = count + 1 WHERE user_id = ? AND day = ?',
+            (user_id, today),
+        )
+    else:
+        db.execute(
+            'INSERT INTO ai_usage (user_id, day, count) VALUES (?, ?, 1)',
+            (user_id, today),
+        )
+    db.commit()
+    return True, AI_DAILY_LIMIT - (used + 1)
 
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
@@ -595,7 +642,46 @@ def ai_coach():
         total=total,
         pnl=pnl,
         pnl_pct=pnl_pct,
+        ai_live=ai.ai_available(),
+        ai_model=ai.model_name() if ai.ai_available() else None,
     )
+
+
+@app.route('/api/ai/chat', methods=['POST'])
+@login_required
+def api_ai_chat():
+    """Real Claude-backed coach chat, grounded in the user's live portfolio."""
+    if not ai.ai_available():
+        return jsonify({
+            'error': "The AI coach is not switched on yet. Ask your mentor to add the API key."
+        }), 503
+
+    data = request.get_json(silent=True) or {}
+    question = (data.get('message') or '').strip()
+    if not question:
+        return jsonify({'error': 'Please type a question first.'}), 400
+
+    db = get_db()
+    allowed, remaining = ai_quota_check_and_increment(db, current_user.id)
+    if not allowed:
+        return jsonify({
+            'error': f"You've reached today's limit of {AI_DAILY_LIMIT} AI questions. Try again tomorrow."
+        }), 429
+
+    cash, stocks_value, total, pnl, pnl_pct, holdings_list = calc_portfolio(current_user.id, db)
+    movers = [
+        {'ticker': r['ticker'], 'change_pct': r['change_pct']}
+        for r in db.execute(
+            'SELECT ticker, change_pct FROM stock_prices '
+            'WHERE change_pct IS NOT NULL ORDER BY ABS(change_pct) DESC LIMIT 6'
+        ).fetchall()
+    ]
+    portfolio = {'cash': cash, 'total': total, 'pnl': pnl, 'pnl_pct': pnl_pct}
+
+    answer, err = ai.coach_answer(question, portfolio, holdings_list, movers)
+    if err:
+        return jsonify({'error': err}), 502
+    return jsonify({'answer': answer, 'remaining': remaining})
 
 
 @app.route('/leaderboard')
