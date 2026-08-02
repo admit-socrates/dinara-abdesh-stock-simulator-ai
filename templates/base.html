@@ -18,6 +18,7 @@
     <a href="{{ url_for('dashboard') }}" class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}">Dashboard</a>
     <a href="{{ url_for('market') }}" class="nav-link {% if request.endpoint == 'market' %}active{% endif %}">Market</a>
     <a href="{{ url_for('portfolio') }}" class="nav-link {% if request.endpoint == 'portfolio' %}active{% endif %}">Portfolio</a>
+    <a href="{{ url_for('history') }}" class="nav-link {% if request.endpoint == 'history' %}active{% endif %}">History</a>
     <a href="{{ url_for('ai_coach') }}" class="nav-link {% if request.endpoint == 'ai_coach' %}active{% endif %}">AI Coach</a>
     <a href="{{ url_for('leaderboard') }}" class="nav-link {% if request.endpoint == 'leaderboard' %}active{% endif %}">Leaderboard</a>
   </div>
@@ -31,6 +32,7 @@
   <a href="{{ url_for('dashboard') }}">Dashboard</a>
   <a href="{{ url_for('market') }}">Market</a>
   <a href="{{ url_for('portfolio') }}">Portfolio</a>
+  <a href="{{ url_for('history') }}">History</a>
   <a href="{{ url_for('ai_coach') }}">AI Coach</a>
   <a href="{{ url_for('leaderboard') }}">Leaderboard</a>
   <a href="{{ url_for('logout') }}">Log out</a>

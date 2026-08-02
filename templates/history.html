@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}History — StockSim AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="eyebrow">Your activity</div>
+    <h1>Trade History</h1>
+  </div>
+</div>
+
+{% if demo %}
+<div class="card">
+  <p>Trade history is saved once the database is connected. In demo mode trades
+  are session-only and are not recorded.</p>
+</div>
+{% elif not rows %}
+<div class="card">
+  <p>No trades yet. Head to the <a href="{{ url_for('market') }}">Market</a> to make your first one.</p>
+</div>
+{% else %}
+<div class="card">
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>Type</th>
+          <th>Stock</th>
+          <th class="num">Shares</th>
+          <th class="num">Price</th>
+          <th class="num">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>{{ r.when }}</td>
+          <td><span class="pct-badge {{ 'positive' if r.type == 'sell' else 'negative' }}">{{ r.type|upper }}</span></td>
+          <td><strong>{{ r.ticker }}</strong> <span class="muted">{{ r.name }}</span></td>
+          <td class="num">{{ '{:g}'.format(r.shares) }}</td>
+          <td class="num">${{ '{:,.2f}'.format(r.price) }}</td>
+          <td class="num">${{ '{:,.2f}'.format(r.total) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

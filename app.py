@@ -33,10 +33,114 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 from database import STARTING_CASH, init_db, get_db, close_db, IS_POSTGRES
 from stocks import TICKERS, TICKER_NAMES, ensure_prices_loaded
+import ai
+
+import logging
+import math
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger('stocksim')
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'stock-sim-dev-secret')
-SESSION_DEMO_MODE = bool(os.environ.get('VERCEL')) and not IS_POSTGRES
+
+_DEFAULT_SECRET = 'stock-sim-dev-secret'
+app.secret_key = os.environ.get('SECRET_KEY', _DEFAULT_SECRET)
+_ON_VERCEL = bool(os.environ.get('VERCEL'))
+if _ON_VERCEL and app.secret_key == _DEFAULT_SECRET:
+    # Sessions signed with the public dev key can be forged. Loud, not fatal
+    # (crashing prod would be worse), but this must never be the case live.
+    logger.critical('SECRET_KEY is unset in production — set it in the Vercel env.')
+
+# Harden the session cookie. On Vercel (HTTPS) also require Secure.
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',   # blocks the cookie on cross-site POSTs (CSRF)
+    SESSION_COOKIE_SECURE=_ON_VERCEL,
+)
+
+SESSION_DEMO_MODE = _ON_VERCEL and not IS_POSTGRES
+
+# Largest order we will accept, to reject absurd/overflow share counts.
+MAX_SHARES = 1_000_000.0
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('X-Frame-Options', 'DENY')
+    resp.headers.setdefault('Referrer-Policy', 'same-origin')
+    return resp
+
+
+def _is_cross_origin():
+    """
+    Defense-in-depth CSRF check for state-changing JSON endpoints: reject a
+    request whose Origin/Referer host is not our own. SameSite=Lax already
+    blocks the session cookie cross-site; this is the belt to that suspenders.
+    """
+    origin = request.headers.get('Origin') or request.headers.get('Referer')
+    if not origin:
+        return False  # non-browser client (curl/tests) — allow
+    from urllib.parse import urlsplit
+    return urlsplit(origin).netloc != urlsplit(request.host_url).netloc
+
+
+def _valid_shares(raw):
+    """Return a positive, finite, capped float or None if invalid."""
+    try:
+        shares = float(raw)
+    except (ValueError, TypeError):
+        return None
+    if not math.isfinite(shares) or shares <= 0 or shares > MAX_SHARES:
+        return None
+    return shares
+
+
+# Max AI-coach calls per user per day. Protects the paid API from abuse/cost.
+try:
+    AI_DAILY_LIMIT = int(os.environ.get('AI_DAILY_LIMIT', '40'))
+except ValueError:
+    AI_DAILY_LIMIT = 40
+
+
+def ai_quota_check_and_increment(db, user_id):
+    """
+    Atomically consume one unit of the user's daily AI quota.
+    Returns (allowed: bool, remaining_after: int). In demo mode (no DB) the
+    count lives in the session instead.
+    """
+    today = date.today().isoformat()
+
+    if SESSION_DEMO_MODE:
+        used = session.get('ai_used', {})
+        n = int(used.get(today, 0))
+        if n >= AI_DAILY_LIMIT:
+            return False, 0
+        used = {today: n + 1}  # keep only today
+        session['ai_used'] = used
+        session.modified = True
+        return True, AI_DAILY_LIMIT - (n + 1)
+
+    row = db.execute(
+        'SELECT count FROM ai_usage WHERE user_id = ? AND day = ?',
+        (user_id, today),
+    ).fetchone()
+    used = row['count'] if row else 0
+    if used >= AI_DAILY_LIMIT:
+        return False, 0
+
+    if row:
+        db.execute(
+            'UPDATE ai_usage SET count = count + 1 WHERE user_id = ? AND day = ?',
+            (user_id, today),
+        )
+    else:
+        db.execute(
+            'INSERT INTO ai_usage (user_id, day, count) VALUES (?, ?, 1)',
+            (user_id, today),
+        )
+    db.commit()
+    return True, AI_DAILY_LIMIT - (used + 1)
 
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
@@ -595,7 +699,57 @@ def ai_coach():
         total=total,
         pnl=pnl,
         pnl_pct=pnl_pct,
+        ai_live=ai.ai_available(),
+        ai_model=ai.model_name() if ai.ai_available() else None,
     )
+
+
+@app.route('/api/ai/chat', methods=['POST'])
+@login_required
+def api_ai_chat():
+    """Real Claude-backed coach chat, grounded in the user's live portfolio."""
+    if _is_cross_origin():
+        return jsonify({'error': 'Cross-origin request blocked.'}), 403
+    if not ai.ai_available():
+        return jsonify({
+            'error': "The AI coach is not switched on yet. Ask your mentor to add the API key."
+        }), 503
+
+    data = request.get_json(silent=True) or {}
+    question = (data.get('message') or '').strip()
+    if not question:
+        return jsonify({'error': 'Please type a question first.'}), 400
+
+    db = get_db()
+    allowed, remaining = ai_quota_check_and_increment(db, current_user.id)
+    if not allowed:
+        return jsonify({
+            'error': f"You've reached today's limit of {AI_DAILY_LIMIT} AI questions. Try again tomorrow."
+        }), 429
+
+    cash, stocks_value, total, pnl, pnl_pct, holdings_list = calc_portfolio(current_user.id, db)
+    movers = [
+        {'ticker': r['ticker'], 'change_pct': r['change_pct']}
+        for r in db.execute(
+            'SELECT ticker, change_pct FROM stock_prices '
+            'WHERE change_pct IS NOT NULL ORDER BY ABS(change_pct) DESC LIMIT 6'
+        ).fetchall()
+    ]
+    portfolio = {'cash': cash, 'total': total, 'pnl': pnl, 'pnl_pct': pnl_pct}
+
+    # Short conversation memory so follow-up questions ("why?") make sense.
+    history = session.get('ai_history', [])
+    answer, err = ai.coach_answer(question, portfolio, holdings_list, movers, history=history)
+    if err:
+        return jsonify({'error': err}), 502
+
+    history = history + [
+        {'role': 'user', 'content': question},
+        {'role': 'assistant', 'content': answer},
+    ]
+    session['ai_history'] = history[-8:]  # keep the last 4 exchanges
+    session.modified = True
+    return jsonify({'answer': answer, 'remaining': remaining})
 
 
 @app.route('/leaderboard')
@@ -642,6 +796,46 @@ def leaderboard():
 
     board.sort(key=lambda x: x['pnl_pct'], reverse=True)
     return render_template('leaderboard.html', board=board, starting_cash=STARTING_CASH)
+
+
+@app.route('/history')
+@login_required
+def history():
+    """A student's own trade history — a core feature the app was missing."""
+    db = get_db()
+    if SESSION_DEMO_MODE:
+        return render_template('history.html', rows=[], demo=True)
+
+    rows = [dict(r) for r in db.execute(
+        'SELECT ticker, shares, price, type, created_at FROM transactions '
+        'WHERE user_id = ? ORDER BY id DESC LIMIT 200',
+        (current_user.id,),
+    ).fetchall()]
+    for r in rows:
+        r['name'] = TICKER_NAMES.get(r['ticker'], r['ticker'])
+        r['total'] = (r['shares'] or 0) * (r['price'] or 0)
+        r['when'] = _fmt_dt(r['created_at'])
+    return render_template('history.html', rows=rows, demo=False)
+
+
+@app.route('/healthz')
+def healthz():
+    """Unauthenticated liveness/readiness probe — also reports DB mode."""
+    prices = None
+    db_ok = True
+    try:
+        prices = get_db().execute(
+            'SELECT COUNT(*) AS c FROM stock_prices'
+        ).fetchone()['c']
+    except Exception:
+        db_ok = False
+    return jsonify({
+        'status': 'ok' if db_ok else 'degraded',
+        'persistent_db': IS_POSTGRES,
+        'demo_mode': SESSION_DEMO_MODE,
+        'ai_coach': 'live' if ai.ai_available() else 'rule-based',
+        'prices_cached': prices,
+    }), (200 if db_ok else 503)
 
 
 # ---------------------------------------------------------------------------
@@ -796,15 +990,13 @@ def api_prices():
 @app.route('/api/buy', methods=['POST'])
 @login_required
 def api_buy():
-    data = request.get_json()
+    if _is_cross_origin():
+        return jsonify({'error': 'Cross-origin request blocked.'}), 403
+    data = request.get_json(silent=True) or {}
     ticker = (data.get('ticker') or '').upper().strip()
-    try:
-        shares = float(data.get('shares', 0))
-    except (ValueError, TypeError):
-        return jsonify({'error': 'Invalid number of shares.'}), 400
-
-    if shares <= 0:
-        return jsonify({'error': 'Number of shares must be greater than 0.'}), 400
+    shares = _valid_shares(data.get('shares', 0))
+    if shares is None:
+        return jsonify({'error': 'Enter a valid number of shares.'}), 400
     if ticker not in TICKERS:
         return jsonify({'error': 'Ticker not found.'}), 400
 
@@ -851,17 +1043,19 @@ def api_buy():
             'new_cash': demo_user['cash_balance'],
         })
 
-    user = db.execute(
-        'SELECT cash_balance FROM users WHERE id = ?', (current_user.id,)
-    ).fetchone()
-    if user['cash_balance'] < total_cost:
-        return jsonify({'error': f'Insufficient funds. Need ${total_cost:,.2f}, available ${user["cash_balance"]:,.2f}.'}), 400
-
-    # Deduct cash
-    db.execute(
-        'UPDATE users SET cash_balance = cash_balance - ? WHERE id = ?',
-        (total_cost, current_user.id),
+    # Atomic, race-safe deduction: only succeeds if the balance still covers
+    # the cost. Guards against a double-submit spending the same cash twice.
+    cur = db.execute(
+        'UPDATE users SET cash_balance = cash_balance - ? '
+        'WHERE id = ? AND cash_balance >= ?',
+        (total_cost, current_user.id, total_cost),
     )
+    if cur.rowcount == 0:
+        db.rollback()
+        avail = db.execute(
+            'SELECT cash_balance FROM users WHERE id = ?', (current_user.id,)
+        ).fetchone()['cash_balance']
+        return jsonify({'error': f'Insufficient funds. Need ${total_cost:,.2f}, available ${avail:,.2f}.'}), 400
 
     # Update holdings (upsert with weighted avg price)
     existing = db.execute(
@@ -899,15 +1093,13 @@ def api_buy():
 @app.route('/api/sell', methods=['POST'])
 @login_required
 def api_sell():
-    data = request.get_json()
+    if _is_cross_origin():
+        return jsonify({'error': 'Cross-origin request blocked.'}), 403
+    data = request.get_json(silent=True) or {}
     ticker = (data.get('ticker') or '').upper().strip()
-    try:
-        shares = float(data.get('shares', 0))
-    except (ValueError, TypeError):
-        return jsonify({'error': 'Invalid number of shares.'}), 400
-
-    if shares <= 0:
-        return jsonify({'error': 'Number of shares must be greater than 0.'}), 400
+    shares = _valid_shares(data.get('shares', 0))
+    if shares is None:
+        return jsonify({'error': 'Enter a valid number of shares.'}), 400
 
     db = get_db()
     price_row = db.execute(
@@ -948,32 +1140,30 @@ def api_sell():
             'new_cash': demo_user['cash_balance'],
         })
 
-    holding = db.execute(
-        'SELECT shares FROM holdings WHERE user_id = ? AND ticker = ?',
-        (current_user.id, ticker),
-    ).fetchone()
-    if not holding or holding['shares'] < shares:
-        owned = holding['shares'] if holding else 0
+    # Atomic, race-safe decrement: only succeeds if enough shares remain.
+    cur = db.execute(
+        'UPDATE holdings SET shares = shares - ? '
+        'WHERE user_id = ? AND ticker = ? AND shares >= ?',
+        (shares, current_user.id, ticker, shares),
+    )
+    if cur.rowcount == 0:
+        owned_row = db.execute(
+            'SELECT shares FROM holdings WHERE user_id = ? AND ticker = ?',
+            (current_user.id, ticker),
+        ).fetchone()
+        owned = owned_row['shares'] if owned_row else 0
+        db.rollback()
         return jsonify({'error': f'Not enough shares. You own {owned:g}.'}), 400
 
-    # Add cash
+    # Drop a fully-sold position, add the proceeds.
+    db.execute(
+        'DELETE FROM holdings WHERE user_id = ? AND ticker = ? AND shares < ?',
+        (current_user.id, ticker, 1e-9),
+    )
     db.execute(
         'UPDATE users SET cash_balance = cash_balance + ? WHERE id = ?',
         (proceeds, current_user.id),
     )
-
-    # Update or remove holding
-    new_shares = holding['shares'] - shares
-    if new_shares < 1e-9:
-        db.execute(
-            'DELETE FROM holdings WHERE user_id = ? AND ticker = ?',
-            (current_user.id, ticker),
-        )
-    else:
-        db.execute(
-            'UPDATE holdings SET shares = ? WHERE user_id = ? AND ticker = ?',
-            (new_shares, current_user.id, ticker),
-        )
 
     db.execute(
         'INSERT INTO transactions (user_id, ticker, shares, price, type) VALUES (?, ?, ?, ?, ?)',
