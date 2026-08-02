@@ -22,9 +22,12 @@ Safety rules that keep this cheap and honest:
 """
 
 import json
+import logging
 import os
 import urllib.request
 import urllib.error
+
+logger = logging.getLogger("stocksim.ai")
 
 # Override with the AI_MODEL env var. gemini-2.0-flash is fast and on the free tier.
 DEFAULT_MODEL = "gemini-2.0-flash"
@@ -85,8 +88,16 @@ def _call_messages(messages, max_tokens=320):
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:500]
+        logger.error("Gemini HTTPError %s for model %s: %s", e.code, model_name(), detail)
+        raise
+    except Exception as e:
+        logger.error("Gemini call failed for model %s: %r", model_name(), e)
+        raise
 
     candidates = body.get("candidates") or []
     if not candidates:
