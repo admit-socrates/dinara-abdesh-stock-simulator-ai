@@ -29,9 +29,18 @@ import urllib.error
 
 logger = logging.getLogger("stocksim.ai")
 
-# Override with the AI_MODEL env var. gemini-2.0-flash is fast and on the free tier.
-DEFAULT_MODEL = "gemini-2.0-flash"
+# Models tried in order; each has its OWN free-tier quota bucket, so if one is
+# rate-limited (429) or unavailable (404) we fall through to the next. Override
+# the first choice with the AI_MODEL env var.
+DEFAULT_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-lite", "gemini-1.5-flash"]
 _API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
+
+
+def model_candidates():
+    env = os.environ.get("AI_MODEL", "").strip()
+    if env:
+        return [env] + [m for m in DEFAULT_MODELS if m != env]
+    return DEFAULT_MODELS
 
 _SYSTEM_PROMPT = (
     "You are the AI Coach inside StockSim AI, a stock-market SIMULATOR used by "
@@ -62,7 +71,7 @@ def ai_available():
 
 
 def model_name():
-    return os.environ.get("AI_MODEL", "").strip() or DEFAULT_MODEL
+    return model_candidates()[0]
 
 
 def _call_messages(messages, max_tokens=320):
@@ -80,33 +89,35 @@ def _call_messages(messages, max_tokens=320):
         "contents": contents,
         "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.4},
     }
+    data = json.dumps(payload).encode("utf-8")
 
-    url = f"{_API_ROOT}/{model_name()}:generateContent?key={_api_key()}"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:500]
-        logger.error("Gemini HTTPError %s for model %s: %s", e.code, model_name(), detail)
-        raise RuntimeError(f"HTTP {e.code} model={model_name()}: {detail}")
-    except Exception as e:
-        logger.error("Gemini call failed for model %s: %r", model_name(), e)
-        raise
-
-    candidates = body.get("candidates") or []
-    if not candidates:
-        raise ValueError("No candidates from Gemini")
-    parts = candidates[0].get("content", {}).get("parts", [])
-    text = "".join(p.get("text", "") for p in parts).strip()
-    if not text:
-        raise ValueError("Empty response from model")
-    return text
+    last_err = None
+    for model in model_candidates():
+        url = f"{_API_ROOT}/{model}:generateContent?key={_api_key()}"
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            candidates = body.get("candidates") or []
+            parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+            text = "".join(p.get("text", "") for p in parts).strip()
+            if not text:
+                raise ValueError("Empty response")
+            return text
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:300]
+            logger.error("Gemini %s on %s: %s", e.code, model, detail)
+            last_err = RuntimeError(f"HTTP {e.code} model={model}: {detail}")
+            if e.code in (400, 404, 429, 503):  # quota / unavailable → try next model
+                continue
+            raise last_err
+        except Exception as e:
+            logger.error("Gemini call failed on %s: %r", model, e)
+            last_err = e
+            continue
+    raise last_err or RuntimeError("All Gemini models failed")
 
 
 def _call(prompt, max_tokens=320):
