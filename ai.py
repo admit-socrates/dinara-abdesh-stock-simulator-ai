@@ -32,7 +32,7 @@ logger = logging.getLogger("stocksim.ai")
 # Models tried in order; each has its OWN free-tier quota bucket, so if one is
 # rate-limited (429) or unavailable (404) we fall through to the next. Override
 # the first choice with the AI_MODEL env var.
-DEFAULT_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash-lite"]
+DEFAULT_MODELS = ["gemini-2.0-flash-lite", "gemini-2.0-flash"]
 _API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
@@ -271,8 +271,6 @@ def coach_answer(question, portfolio, holdings, movers, history=None):
     messages = _sanitize_history(history) + [{"role": "user", "content": context}]
     try:
         text = _call_messages(messages, max_tokens=380)
-    except Exception as e:
-        if os.environ.get("AI_DEBUG") == "1":
-            return None, f"DEBUG {type(e).__name__}: {str(e)[:400]}"
+    except Exception:
         return None, "The AI coach is busy right now. Please try again in a moment."
     return text, None
