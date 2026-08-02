@@ -32,7 +32,7 @@ logger = logging.getLogger("stocksim.ai")
 # Models tried in order; each has its OWN free-tier quota bucket, so if one is
 # rate-limited (429) or unavailable (404) we fall through to the next. Override
 # the first choice with the AI_MODEL env var.
-DEFAULT_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash-lite", "gemini-1.5-flash"]
+DEFAULT_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash-lite"]
 _API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
@@ -92,6 +92,7 @@ def _call_messages(messages, max_tokens=320):
     data = json.dumps(payload).encode("utf-8")
 
     last_err = None
+    attempts = []
     for model in model_candidates():
         url = f"{_API_ROOT}/{model}:generateContent?key={_api_key()}"
         req = urllib.request.Request(
@@ -107,14 +108,16 @@ def _call_messages(messages, max_tokens=320):
                 raise ValueError("Empty response")
             return text
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")[:300]
+            detail = e.read().decode("utf-8", "replace")[:200]
             logger.error("Gemini %s on %s: %s", e.code, model, detail)
-            last_err = RuntimeError(f"HTTP {e.code} model={model}: {detail}")
+            attempts.append(f"{model}={e.code}")
+            last_err = RuntimeError(f"attempts[{', '.join(attempts)}] last={detail}")
             if e.code in (400, 404, 429, 503):  # quota / unavailable → try next model
                 continue
             raise last_err
         except Exception as e:
             logger.error("Gemini call failed on %s: %r", model, e)
+            attempts.append(f"{model}=ERR")
             last_err = e
             continue
     raise last_err or RuntimeError("All Gemini models failed")
