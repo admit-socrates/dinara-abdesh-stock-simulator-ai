@@ -94,7 +94,7 @@ def _call_messages(messages, max_tokens=320):
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:500]
         logger.error("Gemini HTTPError %s for model %s: %s", e.code, model_name(), detail)
-        raise
+        raise RuntimeError(f"HTTP {e.code} model={model_name()}: {detail}")
     except Exception as e:
         logger.error("Gemini call failed for model %s: %r", model_name(), e)
         raise
@@ -257,6 +257,8 @@ def coach_answer(question, portfolio, holdings, movers, history=None):
     messages = _sanitize_history(history) + [{"role": "user", "content": context}]
     try:
         text = _call_messages(messages, max_tokens=380)
-    except Exception:
+    except Exception as e:
+        if os.environ.get("AI_DEBUG") == "1":
+            return None, f"DEBUG {type(e).__name__}: {str(e)[:400]}"
         return None, "The AI coach is busy right now. Please try again in a moment."
     return text, None
