@@ -10,7 +10,8 @@ We force a local, network-free environment:
 import os
 
 # Must be set BEFORE importing the app modules.
-for _k in ("VERCEL", "DATABASE_URL", "SUPABASE_DB_URL", "ANTHROPIC_API_KEY"):
+for _k in ("VERCEL", "DATABASE_URL", "SUPABASE_DB_URL",
+           "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
     os.environ.pop(_k, None)
 
 import pytest  # noqa: E402

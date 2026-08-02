@@ -1,35 +1,34 @@
 """
-Real AI layer for StockSim AI.
+Real AI layer for StockSim AI — backed by Google Gemini (free tier).
 
-This module turns the "AI Coach" from a fixed template into an actual language
-model (Anthropic's Claude). It does two jobs:
-
-  1. explain_stock(...)  — write a short, student-level explanation of why a
-     stock may be moving, grounded ONLY in the real price data we pass in.
+Two jobs:
+  1. explain_stock(...)  — a short, student-level explanation of why a stock
+     may be moving, grounded ONLY in the real price data we pass in.
   2. coach_answer(...)   — answer a student's free-text question, grounded in
-     their real portfolio (cash, holdings, P&L) and live prices.
+     their real portfolio (cash, holdings, P&L) and live prices, with short
+     conversation memory for follow-ups.
 
-Design rules that keep this safe and cheap:
+Why Gemini: it has a genuinely free API tier with no credit card required,
+which fits a student pilot. The call is a plain REST request over the Python
+standard library, so there is no extra dependency to install.
 
-  * Graceful fallback. If ANTHROPIC_API_KEY is missing, the `anthropic`
-    package is not installed, or any API call fails/times out, we fall back to
-    the deterministic explanation in app.build_ai_explanation. The app never
-    breaks just because the AI is unavailable — it simply degrades to the old
-    rule-based coach. This is why the site is safe to deploy before the key is
-    set.
+Safety rules that keep this cheap and honest:
+  * Graceful fallback. If GEMINI_API_KEY is missing or any call fails/times
+    out, we fall back to the deterministic explanation in
+    app.build_ai_explanation. The app never breaks because the AI is down.
   * No invented facts. The system prompt forbids inventing specific news,
-    numbers, or price targets. The model may only reason about the data we give
-    it. This mirrors the engine's core rule: do not fabricate.
+    numbers, or price targets — the model may only reason about the data given.
   * Not financial advice. Everything is framed as educational, on virtual money.
-  * Cheap by default. Small max_tokens, a low-cost model, and a short timeout.
-    Per-user daily quotas live in the app/database layer, not here.
 """
 
+import json
 import os
+import urllib.request
+import urllib.error
 
-# The model can be overridden with the AI_MODEL env var. Haiku is the default:
-# it is the cheapest current Claude model, which matters for a public pilot.
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+# Override with the AI_MODEL env var. gemini-2.0-flash is fast and on the free tier.
+DEFAULT_MODEL = "gemini-2.0-flash"
+_API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 
 _SYSTEM_PROMPT = (
     "You are the AI Coach inside StockSim AI, a stock-market SIMULATOR used by "
@@ -51,41 +50,49 @@ _SYSTEM_PROMPT = (
 
 
 def _api_key():
-    return os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    return (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")).strip()
 
 
 def ai_available():
-    """True only if we have a key AND the anthropic SDK is importable."""
-    if not _api_key():
-        return False
-    try:
-        import anthropic  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    """True if we have a Gemini key configured."""
+    return bool(_api_key())
 
 
 def model_name():
     return os.environ.get("AI_MODEL", "").strip() or DEFAULT_MODEL
 
 
-def _client():
-    import anthropic
-
-    return anthropic.Anthropic(api_key=_api_key(), timeout=20.0)
-
-
 def _call_messages(messages, max_tokens=320):
-    """Multi-turn call. `messages` is a list of {role, content}. Raises on failure."""
-    client = _client()
-    msg = client.messages.create(
-        model=model_name(),
-        max_tokens=max_tokens,
-        system=_SYSTEM_PROMPT,
-        messages=messages,
+    """
+    Multi-turn call to Gemini. `messages` is a list of {role, content} where
+    role is 'user' or 'assistant'. Returns the text, or raises on failure.
+    """
+    contents = []
+    for m in messages:
+        role = "model" if m.get("role") == "assistant" else "user"
+        contents.append({"role": role, "parts": [{"text": m.get("content", "")}]})
+
+    payload = {
+        "systemInstruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
+        "contents": contents,
+        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.4},
+    }
+
+    url = f"{_API_ROOT}/{model_name()}:generateContent?key={_api_key()}"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
-    parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
-    text = "".join(parts).strip()
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+
+    candidates = body.get("candidates") or []
+    if not candidates:
+        raise ValueError("No candidates from Gemini")
+    parts = candidates[0].get("content", {}).get("parts", [])
+    text = "".join(p.get("text", "") for p in parts).strip()
     if not text:
         raise ValueError("Empty response from model")
     return text
@@ -181,7 +188,6 @@ def _split_why_takeaway(text):
         elif upper.startswith("TAKEAWAY:"):
             takeaway = s[9:].strip()
     if why is None and takeaway is None and text:
-        # Model didn't follow the format; use the whole thing as the "why".
         why = text.strip()
     return why, takeaway
 
