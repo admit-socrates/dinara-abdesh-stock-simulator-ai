@@ -1,0 +1,69 @@
+name: Supabase keep-alive
+
+# Why this exists:
+# This app's data lives in a free-tier Supabase Postgres project, which
+# auto-pauses after ~7 days with no database activity. When it pauses, every
+# page 500s until someone manually restores it (this already happened once and
+# took the app down during pilot prep). This workflow hits /healthz on a
+# schedule, which runs a real Postgres query (SELECT COUNT(*) FROM stock_prices),
+# so the idle timer keeps resetting and the project never pauses.
+#
+# It also doubles as an uptime probe: it FAILS (and emails the repo admins) if
+# the app is down, if the DB is unreachable, or if the app has silently fallen
+# back to ephemeral in-memory SQLite instead of the persistent Postgres.
+#
+# No secrets required: /healthz is a public, unauthenticated endpoint.
+
+on:
+  schedule:
+    # Daily at 06:17 UTC. The pause window is ~7 days, so a daily ping leaves a
+    # ~7x safety margin even if GitHub delays or drops a scheduled run.
+    - cron: "17 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HEALTH_URL: "https://stock-simulator-ai.vercel.app/healthz"
+    steps:
+      - name: Ping /healthz and verify persistent Postgres
+        run: |
+          set -euo pipefail
+
+          # Retry a few times: a paused project can take ~30-60s to wake, and
+          # the first request after a cold start may be slow. We WANT the ping
+          # to succeed after waking it, not to fail spuriously.
+          code=""
+          body=""
+          for attempt in 1 2 3 4 5; do
+            resp="$(curl -sS --max-time 45 -w $'\n%{http_code}' "$HEALTH_URL" || true)"
+            code="$(printf '%s' "$resp" | tail -n1)"
+            body="$(printf '%s' "$resp" | sed '$d')"
+            echo "attempt $attempt -> HTTP $code : $body"
+            [ "$code" = "200" ] && break
+            sleep 20
+          done
+
+          if [ "$code" != "200" ]; then
+            echo "::error::Keep-alive FAILED: /healthz did not return 200 after 5 attempts (last HTTP $code). App may be down or DB unreachable."
+            exit 1
+          fi
+
+          # Assert the app is on persistent Postgres (not the /tmp SQLite
+          # fallback) and the DB responded ok. If persistent_db is false the
+          # ping is NOT warming Supabase -- a silent failure we must be told of.
+          if ! printf '%s' "$body" | jq -e '.status == "ok" and .persistent_db == true' >/dev/null; then
+            echo "::error::Keep-alive check FAILED: app is up but not confirming persistent Postgres. Body: $body"
+            exit 1
+          fi
+
+          echo "Keep-alive OK: DB is awake and persistent."
