@@ -834,6 +834,7 @@ def healthz():
         'persistent_db': IS_POSTGRES,
         'demo_mode': SESSION_DEMO_MODE,
         'ai_coach': 'live' if ai.ai_available() else 'rule-based',
+        'ai_provider': ai.provider_name(),
         'prices_cached': prices,
     }), (200 if db_ok else 503)
 

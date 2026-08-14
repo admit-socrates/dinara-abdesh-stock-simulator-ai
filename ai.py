@@ -1,5 +1,6 @@
 """
-Real AI layer for StockSim AI — backed by Google Gemini (free tier).
+Real AI layer for StockSim AI — backed by a free LLM (Groq preferred, Google
+Gemini as fallback).
 
 Two jobs:
   1. explain_stock(...)  — a short, student-level explanation of why a stock
@@ -29,18 +30,44 @@ import urllib.error
 
 logger = logging.getLogger("stocksim.ai")
 
-# Models tried in order; each has its OWN free-tier quota bucket, so if one is
-# rate-limited (429) or unavailable (404) we fall through to the next. Override
-# the first choice with the AI_MODEL env var.
-DEFAULT_MODELS = ["gemini-2.0-flash-lite", "gemini-2.0-flash"]
-_API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
+# Two free backends are supported. Whichever key is set wins; Groq is tried
+# first because its free tier is far more generous than Gemini's (which 429s
+# after only a handful of calls). Neither needs a credit card. Within a
+# provider we try models in order — each has its OWN quota bucket — so a 429/404
+# on the first falls through to the next. Override the first model with AI_MODEL.
+GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+GEMINI_MODELS = ["gemini-2.0-flash-lite", "gemini-2.0-flash"]
+_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+_GEMINI_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
-def model_candidates():
+def _groq_key():
+    return os.environ.get("GROQ_API_KEY", "").strip()
+
+
+def _gemini_key():
+    return (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")).strip()
+
+
+def provider_name():
+    """Which backend is active: 'groq', 'gemini', or None if no key is set."""
+    if _groq_key():
+        return "groq"
+    if _gemini_key():
+        return "gemini"
+    return None
+
+
+def _env_first(defaults):
+    """Put the AI_MODEL override (if any) at the front of a provider's list."""
     env = os.environ.get("AI_MODEL", "").strip()
     if env:
-        return [env] + [m for m in DEFAULT_MODELS if m != env]
-    return DEFAULT_MODELS
+        return [env] + [m for m in defaults if m != env]
+    return list(defaults)
+
+
+def _models_for(provider):
+    return _env_first(GROQ_MODELS if provider == "groq" else GEMINI_MODELS)
 
 _SYSTEM_PROMPT = (
     "You are the AI Coach inside StockSim AI, a stock-market SIMULATOR used by "
@@ -61,20 +88,28 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _api_key():
-    return (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")).strip()
-
-
 def ai_available():
-    """True if we have a Gemini key configured."""
-    return bool(_api_key())
+    """True if any AI provider key is configured."""
+    return provider_name() is not None
 
 
 def model_name():
-    return model_candidates()[0]
+    """First model of the active provider, or None if no provider is configured."""
+    provider = provider_name()
+    return _models_for(provider)[0] if provider else None
 
 
 def _call_messages(messages, max_tokens=320):
+    """Dispatch a multi-turn call to the active provider. Returns text or raises."""
+    provider = provider_name()
+    if provider == "groq":
+        return _call_groq(messages, max_tokens)
+    if provider == "gemini":
+        return _call_gemini(messages, max_tokens)
+    raise RuntimeError("No AI provider configured")
+
+
+def _call_gemini(messages, max_tokens=320):
     """
     Multi-turn call to Gemini. `messages` is a list of {role, content} where
     role is 'user' or 'assistant'. Returns the text, or raises on failure.
@@ -93,8 +128,8 @@ def _call_messages(messages, max_tokens=320):
 
     last_err = None
     attempts = []
-    for model in model_candidates():
-        url = f"{_API_ROOT}/{model}:generateContent?key={_api_key()}"
+    for model in _models_for("gemini"):
+        url = f"{_GEMINI_ROOT}/{model}:generateContent?key={_gemini_key()}"
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"}, method="POST"
         )
@@ -121,6 +156,56 @@ def _call_messages(messages, max_tokens=320):
             last_err = e
             continue
     raise last_err or RuntimeError("All Gemini models failed")
+
+
+def _call_groq(messages, max_tokens=320):
+    """Multi-turn call to Groq's OpenAI-compatible chat API. Returns text or raises."""
+    chat = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    for m in messages:
+        role = "assistant" if m.get("role") == "assistant" else "user"
+        chat.append({"role": role, "content": m.get("content", "")})
+
+    last_err = None
+    attempts = []
+    for model in _models_for("groq"):
+        payload = {
+            "model": model,
+            "messages": chat,
+            "max_tokens": max_tokens,
+            "temperature": 0.4,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            _GROQ_URL,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {_groq_key()}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            choices = body.get("choices") or []
+            text = (choices[0].get("message", {}).get("content", "") if choices else "").strip()
+            if not text:
+                raise ValueError("Empty response")
+            return text
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:200]
+            logger.error("Groq %s on %s: %s", e.code, model, detail)
+            attempts.append(f"{model}={e.code}")
+            last_err = RuntimeError(f"attempts[{', '.join(attempts)}] last={detail}")
+            if e.code in (400, 404, 429, 503):  # quota / unavailable → try next model
+                continue
+            raise last_err
+        except Exception as e:
+            logger.error("Groq call failed on %s: %r", model, e)
+            attempts.append(f"{model}=ERR")
+            last_err = e
+            continue
+    raise last_err or RuntimeError("All Groq models failed")
 
 
 def _call(prompt, max_tokens=320):

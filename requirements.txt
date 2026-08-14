@@ -5,4 +5,5 @@ APScheduler>=3.10.4
 Werkzeug>=3.0.0
 psycopg2-binary>=2.9.0
 python-dotenv>=1.0.0
-# AI Coach uses Google Gemini over plain REST (stdlib urllib) — no SDK needed.
+# AI Coach calls a free LLM over plain REST (stdlib urllib) — no SDK needed.
+# Provider is Groq (GROQ_API_KEY) if set, else Google Gemini (GEMINI_API_KEY).
