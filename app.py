@@ -964,6 +964,86 @@ def admin():
 
 
 # ---------------------------------------------------------------------------
+# Evidence capture (admissions Impact track)
+# ---------------------------------------------------------------------------
+# A dated, preservable snapshot of real usage. The admin dashboard shows live
+# totals; this produces a timestamped JSON record the mentor can save each week
+# as the tech-project's Impact evidence (registered -> activated -> returning,
+# plus a per-day signup/trade series). DB-agnostic: rows are bucketed in Python
+# so it behaves identically on SQLite (local) and Postgres (Vercel).
+
+def _as_date(ts):
+    """Normalize a created_at cell (datetime on Postgres, str on SQLite) to a date."""
+    if ts is None:
+        return None
+    if hasattr(ts, 'date'):
+        return ts.date()
+    try:
+        return datetime.fromisoformat(str(ts)[:19]).date()
+    except ValueError:
+        try:
+            return datetime.strptime(str(ts)[:10], '%Y-%m-%d').date()
+        except ValueError:
+            return None
+
+
+def metrics_snapshot(db, window_days=30):
+    """Return a dated evidence snapshot of real usage."""
+    today = date.today()
+    since = today - timedelta(days=window_days)
+    active_since = today - timedelta(days=7)
+
+    user_dates = [_as_date(r['created_at'])
+                  for r in db.execute('SELECT created_at FROM users').fetchall()]
+    user_dates = [d for d in user_dates if d is not None]
+
+    txns = [(_as_date(r['created_at']), r['user_id'], r['type'])
+            for r in db.execute(
+                'SELECT created_at, user_id, type FROM transactions').fetchall()]
+
+    traders = {uid for (_, uid, _) in txns}
+    active_7d = {uid for (d, uid, _) in txns if d is not None and d >= active_since}
+
+    # Per-day series over the window.
+    signups_by_day = {}
+    trades_by_day = {}
+    for d in user_dates:
+        if d >= since:
+            signups_by_day[d.isoformat()] = signups_by_day.get(d.isoformat(), 0) + 1
+    for (d, _uid, _t) in txns:
+        if d is not None and d >= since:
+            trades_by_day[d.isoformat()] = trades_by_day.get(d.isoformat(), 0) + 1
+
+    days = [(since + timedelta(days=i)).isoformat() for i in range(window_days + 1)]
+    daily = [{'date': day,
+              'signups': signups_by_day.get(day, 0),
+              'trades': trades_by_day.get(day, 0)} for day in days]
+
+    total_users = len(user_dates)
+    activated = len(traders)
+    return {
+        'generated_at': datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+        'window_days': window_days,
+        'funnel': {
+            'registered': total_users,
+            'activated': activated,             # placed >=1 trade
+            'active_last_7d': len(active_7d),   # traded in the last 7 days
+            'activation_rate': round(activated / total_users, 3) if total_users else 0.0,
+        },
+        'trades': {'total': len(txns)},
+        'daily': daily,
+    }
+
+
+@app.route('/metrics.json')
+def metrics_json():
+    """Admin-gated dated evidence export for the tech-project Impact track."""
+    if not session.get('admin_ok'):
+        return jsonify({'error': 'admin login required at /admin'}), 403
+    return jsonify(metrics_snapshot(get_db()))
+
+
+# ---------------------------------------------------------------------------
 # API endpoints
 # ---------------------------------------------------------------------------
 
