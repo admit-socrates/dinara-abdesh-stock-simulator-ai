@@ -16,11 +16,19 @@ question for the student.
 The idea is that a beginner who buys a falling stock should be asked "is this a real business problem
 or short-term market fear?" rather than just watching a red number.
 
-**How the explanations are generated.** They are produced by a deterministic rule engine
-(`build_ai_explanation`, `app.py:286`), not by a language model. It buckets the day's percentage change
-into up, down, or flat, looks up the ticker's sector, and fills a matching template. There is no model
-API involved and no external AI dependency. Calling it an explanation engine is accurate; calling it a
-language model would not be.
+**How the explanations are generated.** Two paths, and the app tells you which one is running.
+
+1. **Language model (current default in production).** When a provider key is set, `ai.py` calls a real
+   LLM over plain REST from the standard library: Groq first (`GROQ_API_KEY`), Google Gemini as the
+   fallback (`GEMINI_API_KEY`). The model is given only the student's real portfolio numbers and cached
+   prices, and the system prompt forbids inventing news, earnings, or price targets. It also powers the
+   chat on the AI Coach page. Per-user daily cap: `AI_DAILY_LIMIT`, default 40.
+2. **Deterministic rule engine (fallback).** With no key set, or if the model call fails or times out,
+   the app falls back to `build_ai_explanation` in `app.py`: bucket the day's percentage change into up,
+   down, or flat, look up the ticker's sector, fill a matching template. No network call is made.
+
+`GET /healthz` reports which is active (`ai_coach`, `ai_provider`), and the AI Coach page carries a
+badge saying "AI live" or "rule-based". Describe the project by whichever one is actually running.
 
 ## Pages
 
@@ -77,5 +85,8 @@ hash (pbkdf2:sha256) and nothing else.
 ## Known limitations
 
 - Prices refresh daily, not live, so intraday moves are not reflected.
-- The explanation engine is rule-based, so it describes patterns rather than analysing a company.
+- Without a provider key the explanation engine falls back to rules, so it describes patterns
+  rather than analysing a company. Check `/healthz` to see which mode is live.
+- The model only sees the portfolio numbers and cached prices passed to it. It has no news feed,
+  so it reasons in general terms rather than citing events.
 - Nothing here is financial advice, and no security is recommended.

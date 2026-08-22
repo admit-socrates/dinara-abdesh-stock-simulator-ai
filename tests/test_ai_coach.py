@@ -132,3 +132,63 @@ def test_explain_stock_fallback_is_unchanged(client, monkeypatch):
     out = ai.explain_stock({"ticker": "AAPL"}, None, fallback=fallback)
     assert out["why"] == "rule why"
     assert out["ai_source"] == "rules"
+
+
+def test_groq_request_sends_explicit_user_agent(monkeypatch):
+    """Regression (2026-08-22): Groq sits behind Cloudflare, which rejected the
+    stdlib default User-Agent ("Python-urllib/3.x") with 403 "error code: 1010"
+    before the request reached the API. The coach answered "busy" for every
+    question even with a valid key. Every provider call must send an explicit UA."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    seen = {}
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"choices": [{"message": {"content": "ok"}}]}
+            ).encode("utf-8")
+
+    def fake_urlopen(req, timeout=20):
+        seen["ua"] = req.get_header("User-agent")
+        return FakeResp()
+
+    monkeypatch.setattr(ai.urllib.request, "urlopen", fake_urlopen)
+    ai._call_messages([{"role": "user", "content": "hi"}])
+
+    assert seen["ua"], "no User-Agent sent — Cloudflare will return 403/1010"
+    assert "urllib" not in seen["ua"].lower()
+    assert seen["ua"] == ai._USER_AGENT
+
+
+def test_gemini_request_sends_explicit_user_agent(monkeypatch):
+    """Same guard on the Gemini path, so a future edge rule cannot bite us there."""
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza_test")
+    seen = {}
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+            ).encode("utf-8")
+
+    def fake_urlopen(req, timeout=20):
+        seen["ua"] = req.get_header("User-agent")
+        return FakeResp()
+
+    monkeypatch.setattr(ai.urllib.request, "urlopen", fake_urlopen)
+    ai._call_messages([{"role": "user", "content": "hi"}])
+
+    assert seen["ua"] == ai._USER_AGENT

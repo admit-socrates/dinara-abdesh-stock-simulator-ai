@@ -707,7 +707,7 @@ def ai_coach():
 @app.route('/api/ai/chat', methods=['POST'])
 @login_required
 def api_ai_chat():
-    """Real Claude-backed coach chat, grounded in the user's live portfolio."""
+    """Coach chat backed by the active LLM provider, grounded in the user's live portfolio."""
     if _is_cross_origin():
         return jsonify({'error': 'Cross-origin request blocked.'}), 403
     if not ai.ai_available():

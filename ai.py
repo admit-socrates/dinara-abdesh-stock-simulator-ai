@@ -9,12 +9,13 @@ Two jobs:
      their real portfolio (cash, holdings, P&L) and live prices, with short
      conversation memory for follow-ups.
 
-Why Gemini: it has a genuinely free API tier with no credit card required,
-which fits a student pilot. The call is a plain REST request over the Python
-standard library, so there is no extra dependency to install.
+Why these two: both have a genuinely free API tier with no credit card
+required, which fits a student pilot. Groq is preferred because its free limits
+are far more generous. Each call is a plain REST request over the Python standard
+library, so there is no extra dependency to install.
 
 Safety rules that keep this cheap and honest:
-  * Graceful fallback. If GEMINI_API_KEY is missing or any call fails/times
+  * Graceful fallback. If no provider key is set, or any call fails/times
     out, we fall back to the deterministic explanation in
     app.build_ai_explanation. The app never breaks because the AI is down.
   * No invented facts. The system prompt forbids inventing specific news,
@@ -39,6 +40,13 @@ GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 GEMINI_MODELS = ["gemini-2.0-flash-lite", "gemini-2.0-flash"]
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 _GEMINI_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# Groq sits behind Cloudflare, which rejects the Python standard library's default
+# User-Agent ("Python-urllib/3.x") with HTTP 403 "error code: 1010" before the request
+# ever reaches the API. Any explicit User-Agent passes. Verified 2026-08-22: the same
+# request with the default UA returns 403/1010 and with this one returns a normal API
+# response. Sent on every provider call so a future edge rule cannot bite us again.
+_USER_AGENT = "StockSimAI/1.0 (+https://stock-simulator-ai.vercel.app)"
 
 
 def _groq_key():
@@ -131,7 +139,10 @@ def _call_gemini(messages, max_tokens=320):
     for model in _models_for("gemini"):
         url = f"{_GEMINI_ROOT}/{model}:generateContent?key={_gemini_key()}"
         req = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+            url,
+            data=data,
+            headers={"Content-Type": "application/json", "User-Agent": _USER_AGENT},
+            method="POST",
         )
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
@@ -147,7 +158,7 @@ def _call_gemini(messages, max_tokens=320):
             logger.error("Gemini %s on %s: %s", e.code, model, detail)
             attempts.append(f"{model}={e.code}")
             last_err = RuntimeError(f"attempts[{', '.join(attempts)}] last={detail}")
-            if e.code in (400, 404, 429, 503):  # quota / unavailable → try next model
+            if e.code in (400, 403, 404, 429, 503):  # blocked / quota / unavailable → try next model
                 continue
             raise last_err
         except Exception as e:
@@ -181,6 +192,7 @@ def _call_groq(messages, max_tokens=320):
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {_groq_key()}",
+                "User-Agent": _USER_AGENT,
             },
             method="POST",
         )
@@ -197,7 +209,7 @@ def _call_groq(messages, max_tokens=320):
             logger.error("Groq %s on %s: %s", e.code, model, detail)
             attempts.append(f"{model}={e.code}")
             last_err = RuntimeError(f"attempts[{', '.join(attempts)}] last={detail}")
-            if e.code in (400, 404, 429, 503):  # quota / unavailable → try next model
+            if e.code in (400, 403, 404, 429, 503):  # blocked / quota / unavailable → try next model
                 continue
             raise last_err
         except Exception as e:
