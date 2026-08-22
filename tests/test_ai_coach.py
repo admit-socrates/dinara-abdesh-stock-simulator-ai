@@ -192,3 +192,64 @@ def test_gemini_request_sends_explicit_user_agent(monkeypatch):
     ai._call_messages([{"role": "user", "content": "hi"}])
 
     assert seen["ua"] == ai._USER_AGENT
+
+
+def test_groq_model_discovery_replaces_a_retired_id(monkeypatch):
+    """Regression (2026-08-22, second failure): Groq decommissioned
+    llama-3.3-70b-versatile and llama-3.1-8b-instant, so every chat call returned
+    404 model_not_found and the coach said "busy" with a perfectly valid key.
+    A hardcoded model list rots; the app must ask Groq what exists now."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    ai._groq_live_cache = None  # force a discovery round
+    monkeypatch.setattr(ai, "GROQ_MODELS", ["retired-model-id"])
+    seen = []
+
+    class FakeResp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(self._payload).encode("utf-8")
+
+    def fake_urlopen(req, timeout=20):
+        if req.full_url == ai._GROQ_MODELS_URL:
+            return FakeResp({"data": [
+                {"id": "whisper-large-v3"},        # not a chat model, must be dropped
+                {"id": "openai/gpt-oss-120b"},
+                {"id": "meta-llama/llama-guard-4"},  # guard model, must be dropped
+            ]})
+        seen.append(json.loads(req.data.decode("utf-8"))["model"])
+        return FakeResp({"choices": [{"message": {"content": "answered"}}]})
+
+    monkeypatch.setattr(ai.urllib.request, "urlopen", fake_urlopen)
+    out = ai._call_messages([{"role": "user", "content": "hi"}])
+
+    assert out == "answered"
+    # It reached for a model the key can actually use, not the retired one.
+    assert seen[-1] == "openai/gpt-oss-120b"
+    assert "whisper-large-v3" not in seen
+    assert "meta-llama/llama-guard-4" not in seen
+
+
+def test_groq_discovery_failure_is_never_fatal(monkeypatch):
+    """If listing models fails, fall back to the configured ids rather than break."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    ai._groq_live_cache = None
+
+    def boom(req, timeout=20):
+        raise OSError("network down")
+
+    monkeypatch.setattr(ai.urllib.request, "urlopen", boom)
+    assert ai._groq_candidates() == ai.GROQ_MODELS
+
+
+def test_default_groq_models_are_not_the_retired_llama_pair():
+    """Guards the specific ids Groq retired on 2026-08-22."""
+    assert "llama-3.3-70b-versatile" not in ai.GROQ_MODELS
+    assert "llama-3.1-8b-instant" not in ai.GROQ_MODELS

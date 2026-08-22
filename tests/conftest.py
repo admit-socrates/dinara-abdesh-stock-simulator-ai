@@ -3,7 +3,7 @@ Test setup for StockSim AI.
 
 We force a local, network-free environment:
   * no VERCEL / no DATABASE_URL  -> SQLite backend, real auth (not demo mode)
-  * no ANTHROPIC_API_KEY         -> AI Coach defaults to the rule-based fallback
+  * no provider API keys         -> AI Coach defaults to the rule-based fallback
   * prices are seeded by hand    -> yfinance is never called
 """
 
@@ -11,11 +11,12 @@ import os
 
 # Must be set BEFORE importing the app modules.
 for _k in ("VERCEL", "DATABASE_URL", "SUPABASE_DB_URL",
-           "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+           "ANTHROPIC_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
     os.environ.pop(_k, None)
 
 import pytest  # noqa: E402
 
+import ai  # noqa: E402
 import database  # noqa: E402
 import app as app_module  # noqa: E402
 
@@ -72,3 +73,13 @@ def login(client, username="student1", password="secret1"):
         data={"action": "login", "username": username, "password": password},
         follow_redirects=True,
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_groq_model_discovery():
+    """Groq model discovery is a live HTTP call. Pre-empt it so no test can reach
+    the network, and reset it afterwards so a test that exercises discovery on
+    purpose starts from a clean cache."""
+    ai._groq_live_cache = []
+    yield
+    ai._groq_live_cache = None

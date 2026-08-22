@@ -36,9 +36,15 @@ logger = logging.getLogger("stocksim.ai")
 # after only a handful of calls). Neither needs a credit card. Within a
 # provider we try models in order — each has its OWN quota bucket — so a 429/404
 # on the first falls through to the next. Override the first model with AI_MODEL.
-GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+# Groq retires models on a schedule and returns 404 model_not_found for a dead id.
+# These are the documented replacements for the llama-3.x pair that was decommissioned
+# (llama-3.3-70b-versatile -> openai/gpt-oss-120b, llama-3.1-8b-instant -> openai/gpt-oss-20b,
+# per https://console.groq.com/docs/deprecations, read 2026-08-22). They are only the
+# preference order: if they ever die too, _groq_candidates() asks the API what exists now.
+GROQ_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
 GEMINI_MODELS = ["gemini-2.0-flash-lite", "gemini-2.0-flash"]
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+_GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
 _GEMINI_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # Groq sits behind Cloudflare, which rejects the Python standard library's default
@@ -76,6 +82,53 @@ def _env_first(defaults):
 
 def _models_for(provider):
     return _env_first(GROQ_MODELS if provider == "groq" else GEMINI_MODELS)
+
+
+# Cached per process. None = not asked yet, [] = asked and it failed.
+_groq_live_cache = None
+# Model families Groq serves that cannot answer a chat message.
+_NOT_CHAT = ("whisper", "tts", "guard", "embed", "vision-preview")
+
+
+def _groq_live_models():
+    """Ask Groq which models the key can actually use, right now.
+
+    Hardcoded model ids rot: Groq decommissions them and every call then returns
+    404 model_not_found, which the coach surfaces as "busy" (this happened
+    2026-08-22 with the llama-3.x pair). Asking the API removes the whole class
+    of failure. Cached for the life of the process; never fatal.
+    """
+    global _groq_live_cache
+    if _groq_live_cache is not None:
+        return _groq_live_cache
+    _groq_live_cache = []
+    try:
+        req = urllib.request.Request(
+            _GROQ_MODELS_URL,
+            headers={"Authorization": f"Bearer {_groq_key()}", "User-Agent": _USER_AGENT},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        ids = [m.get("id", "") for m in body.get("data", []) if m.get("id")]
+        _groq_live_cache = [m for m in ids if not any(bad in m.lower() for bad in _NOT_CHAT)]
+        # Logged so the model list can be read from the deploy logs without
+        # anyone handling the API key.
+        logger.info("Groq live chat models: %s", ", ".join(_groq_live_cache) or "(none)")
+    except Exception as e:
+        logger.error("Could not list Groq models: %r", e)
+    return _groq_live_cache
+
+
+def _groq_candidates():
+    """Preferred models first, then anything else the key can actually reach."""
+    preferred = _env_first(GROQ_MODELS)
+    live = _groq_live_models()
+    if not live:
+        return preferred
+    ordered = [m for m in preferred if m in live]
+    ordered += [m for m in live if m not in ordered]
+    return ordered or preferred
 
 _SYSTEM_PROMPT = (
     "You are the AI Coach inside StockSim AI, a stock-market SIMULATOR used by "
@@ -178,7 +231,7 @@ def _call_groq(messages, max_tokens=320):
 
     last_err = None
     attempts = []
-    for model in _models_for("groq"):
+    for model in _groq_candidates():
         payload = {
             "model": model,
             "messages": chat,
